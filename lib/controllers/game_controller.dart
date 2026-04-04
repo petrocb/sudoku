@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../models/difficulty.dart';
 import '../models/game_state.dart';
+import '../models/puzzle_config.dart';
 
 import '../services/storage_service.dart';
 import '../services/sudoku_engine.dart';
@@ -11,7 +12,7 @@ import '../services/timer_service.dart';
 import '../controllers/stats_controller.dart';
 import '../controllers/settings_controller.dart';
 
-import '../utils/sudoku_rules.dart';
+import '../utils/puzzle_rules.dart';
 import '../utils/formatters.dart';
 
 class CompletionInfo {
@@ -37,6 +38,7 @@ class GameController extends ChangeNotifier {
   final SettingsController settings;
 
   GameState? _state;
+  PuzzleRules? _rules;
   bool _loading = false;
 
   Set<int> _conflicts = {};
@@ -84,6 +86,7 @@ class GameController extends ChangeNotifier {
     }
 
     _state = loaded;
+    _rules = PuzzleRules(loaded.config);
     _recomputeDerived();
 
     _startTimer();
@@ -92,22 +95,37 @@ class GameController extends ChangeNotifier {
   }
 
   Future<void> newGame(Difficulty d) async {
+    final seed = DateTime.now().microsecondsSinceEpoch;
+    final config = PuzzleConfig.standard9x9(difficultyId: d.id, seed: seed);
+    await newGameWithConfig(config, clues: d.clues);
+  }
+
+  /// Start a variant game with a fully-specified [PuzzleConfig].
+  /// The engine may produce a [resolvedConfig] (e.g. Jigsaw regionMap injected,
+  /// Killer cages built) — that resolved version is stored in [GameState].
+  Future<void> newGameWithConfig(PuzzleConfig config, {required int clues}) async {
     _loading = true;
     notifyListeners();
 
-    // allow UI to paint a spinner
+    // Allow UI to paint a spinner before we block on generation
     await Future<void>.delayed(const Duration(milliseconds: 10));
 
-    final puzzle = engine.generate(clues: d.clues);
+    final puzzle = engine.generateFromConfig(config, clues: clues);
+    final effectiveConfig = puzzle.resolvedConfig ?? config;
+
+    _rules = PuzzleRules(effectiveConfig);
+
     final now = DateTime.now().toIso8601String();
+    final cellCount = effectiveConfig.geometry.cellCount;
 
     _state = GameState(
-      difficultyId: d.id,
-      clueCount: d.clues,
+      config: effectiveConfig,
+      difficultyId: effectiveConfig.difficultyId,
+      clueCount: clues,
       given: List<int>.from(puzzle.puzzle),
       board: List<int>.from(puzzle.puzzle),
       solution: List<int>.from(puzzle.solution),
-      notes: List<int>.filled(81, 0),
+      notes: List<int>.filled(cellCount, 0),
       selectedIndex: null,
       notesMode: false,
       hintsUsed: 0,
@@ -118,7 +136,7 @@ class GameController extends ChangeNotifier {
     );
 
     _recomputeDerived();
-    await stats.recordStarted(d.id);
+    await stats.recordStarted(effectiveConfig.difficultyId);
 
     _startTimer();
     _loading = false;
@@ -130,6 +148,7 @@ class GameController extends ChangeNotifier {
   Future<void> abandon() async {
     timer.stop();
     _state = null;
+    _rules = null;
     _completion = null;
     _conflicts = {};
     _peers = {};
@@ -154,52 +173,49 @@ class GameController extends ChangeNotifier {
     notifyListeners();
   }
 
-Future<void> enterNumber(int n) async {
-  final s = _state;
-  if (s == null) return;
-  final idx = s.selectedIndex;
-  if (idx == null) return;
-  if (s.given[idx] != 0) return;
+  Future<void> enterNumber(int n) async {
+    final s = _state;
+    if (s == null) return;
+    final idx = s.selectedIndex;
+    if (idx == null) return;
+    if (s.given[idx] != 0) return;
 
-  if (s.notesMode) {
-    await toggleNote(n);
-    return;
+    if (s.notesMode) {
+      await toggleNote(n);
+      return;
+    }
+
+    if (n == 0) {
+      await clearCell();
+      return;
+    }
+
+    final newBoard = List<int>.from(s.board);
+    newBoard[idx] = n;
+
+    final newNotes = List<int>.from(s.notes);
+    newNotes[idx] = 0;
+
+    _removeNoteFromPeers(
+      idx: idx,
+      number: n,
+      given: s.given,
+      board: newBoard,
+      notes: newNotes,
+    );
+
+    _state = s.copyWith(
+      board: newBoard,
+      notes: newNotes,
+      lastSavedAtIso: DateTime.now().toIso8601String(),
+    );
+
+    _haptic();
+    _recomputeDerived();
+    await _persist(force: true);
+    await _maybeComplete();
+    notifyListeners();
   }
-
-  // If n == 0, treat as clear (same as clearCell)
-  if (n == 0) {
-    await clearCell();
-    return;
-  }
-
-  final newBoard = List<int>.from(s.board);
-  newBoard[idx] = n;
-
-  // Clear notes for that cell when setting a value
-  final newNotes = List<int>.from(s.notes);
-  newNotes[idx] = 0;
-
-  // NEW: remove note 'n' from all peer cells (row/col/box)
-  _removeNoteFromPeers(
-    idx: idx,
-    number: n,
-    given: s.given,
-    board: newBoard,
-    notes: newNotes,
-  );
-
-  _state = s.copyWith(
-    board: newBoard,
-    notes: newNotes,
-    lastSavedAtIso: DateTime.now().toIso8601String(),
-  );
-
-  _haptic();
-  _recomputeDerived();
-  await _persist(force: true);
-  await _maybeComplete();
-  notifyListeners();
-}
 
   Future<void> clearCell() async {
     final s = _state;
@@ -232,12 +248,10 @@ Future<void> enterNumber(int n) async {
     final idx = s.selectedIndex;
     if (idx == null) return;
     if (s.given[idx] != 0) return;
-    if (s.board[idx] != 0) return; // no notes on filled cells
+    if (s.board[idx] != 0) return;
 
     final newNotes = List<int>.from(s.notes);
-    final mask = newNotes[idx];
-    final bit = 1 << n;
-    newNotes[idx] = mask ^ bit;
+    newNotes[idx] = newNotes[idx] ^ (1 << n);
 
     _state = s.copyWith(
       notes: newNotes,
@@ -254,9 +268,9 @@ Future<void> enterNumber(int n) async {
     final s = _state;
     if (s == null) return;
 
-    // pick first empty editable
+    final cellCount = s.config.geometry.cellCount;
     int idx = -1;
-    for (int i = 0; i < 81; i++) {
+    for (int i = 0; i < cellCount; i++) {
       if (s.given[i] == 0 && s.board[i] == 0) {
         idx = i;
         break;
@@ -264,19 +278,20 @@ Future<void> enterNumber(int n) async {
     }
     if (idx == -1) return;
 
-final newBoard = List<int>.from(s.board);
-newBoard[idx] = s.solution[idx];
-final newNotes = List<int>.from(s.notes);
-newNotes[idx] = 0;
+    final newBoard = List<int>.from(s.board);
+    newBoard[idx] = s.solution[idx];
+    final newNotes = List<int>.from(s.notes);
+    newNotes[idx] = 0;
 
-final n = s.solution[idx];
-_removeNoteFromPeers(
-  idx: idx,
-  number: n,
-  given: s.given,
-  board: newBoard,
-  notes: newNotes,
-);
+    final n = s.solution[idx];
+    _removeNoteFromPeers(
+      idx: idx,
+      number: n,
+      given: s.given,
+      board: newBoard,
+      notes: newNotes,
+    );
+
     _state = s.copyWith(
       board: newBoard,
       notes: newNotes,
@@ -296,10 +311,11 @@ _removeNoteFromPeers(
     final s = _state;
     if (s == null) return;
 
+    final cellCount = s.config.geometry.cellCount;
     final newBoard = List<int>.from(s.board);
     final newNotes = List<int>.from(s.notes);
 
-    for (int i = 0; i < 81; i++) {
+    for (int i = 0; i < cellCount; i++) {
       if (s.given[i] == 0) {
         newBoard[i] = 0;
         newNotes[i] = 0;
@@ -319,7 +335,6 @@ _removeNoteFromPeers(
     notifyListeners();
   }
 
-  // Called by GameScreen on lifecycle changes
   Future<void> onAppPaused() async {
     timer.pause();
     await _persist(force: true);
@@ -329,33 +344,30 @@ _removeNoteFromPeers(
     timer.resume();
   }
 
-  // GameScreen uses this after showing completion dialog
   void clearCompletion() {
     _completion = null;
   }
 
-  // ---- Internal helpers ----
+  // ── Internal helpers ────────────────────────────────────────────────────────
+
   void _removeNoteFromPeers({
-  required int idx,
-  required int number,
-  required List<int> given,
-  required List<int> board,
-  required List<int> notes,
-}) {
-  final bit = 1 << number;
-  final peers = peerCells(idx); // from utils/sudoku_rules.dart
+    required int idx,
+    required int number,
+    required List<int> given,
+    required List<int> board,
+    required List<int> notes,
+  }) {
+    final rules = _rules;
+    if (rules == null) return;
 
-  for (final p in peers) {
-    // only editable, empty cells can have notes
-    if (given[p] != 0) continue;
-    if (board[p] != 0) continue;
-
-    final mask = notes[p];
-    if ((mask & bit) != 0) {
-      notes[p] = mask & ~bit; // remove that note
+    final bit = 1 << number;
+    for (final p in rules.peersOf(idx)) {
+      if (given[p] != 0) continue;
+      if (board[p] != 0) continue;
+      final mask = notes[p];
+      if ((mask & bit) != 0) notes[p] = mask & ~bit;
     }
   }
-}
 
   void _startTimer() {
     final s = _state;
@@ -367,12 +379,10 @@ _removeNoteFromPeers(
       initialElapsedMs: s.elapsedMs,
       onTick: (elapsedMs) async {
         final current = _state;
-        if (current == null) return;
-        if (current.isCompleted) return;
+        if (current == null || current.isCompleted) return;
 
         _state = current.copyWith(elapsedMs: elapsedMs);
 
-        // Persist timer occasionally (every 5 seconds) to survive abrupt closes
         if ((elapsedMs - _lastPersistTickMs).abs() >= 5000) {
           _lastPersistTickMs = elapsedMs;
           await _persist(force: false);
@@ -387,21 +397,24 @@ _removeNoteFromPeers(
     final s = _state;
     if (s == null) return;
 
-    _conflicts = settings.showConflicts ? findConflicts(s.board) : {};
+    _conflicts = (settings.showConflicts && _rules != null)
+        ? _rules!.findConflicts(s.board)
+        : {};
     _recomputeHighlightsOnly();
   }
 
   void _recomputeHighlightsOnly() {
     final s = _state;
-    if (s == null) return;
+    final rules = _rules;
+    if (s == null || rules == null) return;
 
     final idx = s.selectedIndex;
-    _peers = idx == null ? {} : peerCells(idx);
+    _peers = idx == null ? {} : rules.peersOf(idx);
 
     final v = (idx == null) ? 0 : s.board[idx];
     if (v != 0) {
-      _sameNumbers = sameNumberCells(s.board, v);
-      _highlightNotesMask = (1 << v);
+      _sameNumbers = rules.sameValueCells(s.board, v);
+      _highlightNotesMask = 1 << v;
     } else {
       _sameNumbers = {};
       _highlightNotesMask = 0;
@@ -410,28 +423,22 @@ _removeNoteFromPeers(
 
   Future<void> _persist({required bool force}) async {
     final s = _state;
-    if (s == null) return;
-    if (s.isCompleted) return;
+    if (s == null || s.isCompleted) return;
 
-    // Save immediately for moves; timer saves can be throttled (force=false).
-    // For v1 we still save on each tick occasionally and always on force.
-    final nowIso = DateTime.now().toIso8601String();
-    final updated = s.copyWith(lastSavedAtIso: nowIso);
+    final updated = s.copyWith(lastSavedAtIso: DateTime.now().toIso8601String());
     _state = updated;
-
     await storage.saveGame(updated);
   }
 
   Future<void> _maybeComplete() async {
     final s = _state;
-    if (s == null) return;
+    final rules = _rules;
+    if (s == null || rules == null) return;
 
     if (settings.showConflicts && _conflicts.isNotEmpty) return;
     if (s.board.any((v) => v == 0)) return;
+    if (!rules.isSolved(s.board)) return;
 
-    if (!isSolvedExactly(s.board, s.solution)) return;
-
-    // Completed
     timer.stop();
 
     final diff = Difficulty.fromId(s.difficultyId, clues: s.clueCount);

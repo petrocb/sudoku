@@ -1,11 +1,15 @@
+import 'puzzle_config.dart';
+
 class GameState {
+  final PuzzleConfig config;
+
   final String difficultyId;
   final int clueCount;
 
-  final List<int> given;    // 81
-  final List<int> board;    // 81
-  final List<int> solution; // 81
-  final List<int> notes;    // 81 bitmask
+  final List<int> given;    // length = config.geometry.cellCount
+  final List<int> board;    // length = config.geometry.cellCount
+  final List<int> solution; // length = config.geometry.cellCount
+  final List<int> notes;    // length = config.geometry.cellCount, bitmask per cell
 
   final int? selectedIndex;
   final bool notesMode;
@@ -19,6 +23,7 @@ class GameState {
   final bool isCompleted;
 
   const GameState({
+    required this.config,
     required this.difficultyId,
     required this.clueCount,
     required this.given,
@@ -35,6 +40,7 @@ class GameState {
   });
 
   GameState copyWith({
+    PuzzleConfig? config,
     String? difficultyId,
     int? clueCount,
     List<int>? given,
@@ -51,13 +57,15 @@ class GameState {
     bool clearSelectedIndex = false,
   }) {
     return GameState(
+      config: config ?? this.config,
       difficultyId: difficultyId ?? this.difficultyId,
       clueCount: clueCount ?? this.clueCount,
       given: given ?? this.given,
       board: board ?? this.board,
       solution: solution ?? this.solution,
       notes: notes ?? this.notes,
-      selectedIndex: clearSelectedIndex ? null : (selectedIndex ?? this.selectedIndex),
+      selectedIndex:
+          clearSelectedIndex ? null : (selectedIndex ?? this.selectedIndex),
       notesMode: notesMode ?? this.notesMode,
       hintsUsed: hintsUsed ?? this.hintsUsed,
       elapsedMs: elapsedMs ?? this.elapsedMs,
@@ -68,6 +76,7 @@ class GameState {
   }
 
   Map<String, dynamic> toJson() => {
+        'config': config.toJson(),
         'difficultyId': difficultyId,
         'clueCount': clueCount,
         'given': given,
@@ -89,16 +98,33 @@ class GameState {
       return v.map((e) => (e as num).toInt()).toList(growable: false);
     }
 
-    final given = toIntList(json['given']);
-    final board = toIntList(json['board']);
-    final solution = toIntList(json['solution']);
-    final notes = toIntList(json['notes']);
+    // Load config — fall back to standard 9×9 for legacy saves without 'config'
+    final config = PuzzleConfig.fromJson(
+          json['config'] is Map<String, dynamic>
+              ? json['config'] as Map<String, dynamic>
+              : null,
+        ) ??
+        PuzzleConfig.standard9x9(
+          difficultyId: (json['difficultyId'] ?? 'medium').toString(),
+          seed: (json['seed'] as num?)?.toInt() ?? 0,
+        );
 
-    if (given.length != 81 || board.length != 81 || solution.length != 81 || notes.length != 81) {
+    final expected = config.geometry.cellCount;
+
+    final given    = toIntList(json['given']);
+    final board    = toIntList(json['board']);
+    final solution = toIntList(json['solution']);
+    final notes    = toIntList(json['notes']);
+
+    if (given.length    != expected ||
+        board.length    != expected ||
+        solution.length != expected ||
+        notes.length    != expected) {
       return null;
     }
 
     return GameState(
+      config: config,
       difficultyId: (json['difficultyId'] ?? 'medium').toString(),
       clueCount: (json['clueCount'] as num?)?.toInt() ?? 34,
       given: given,
@@ -109,8 +135,10 @@ class GameState {
       notesMode: json['notesMode'] == true,
       hintsUsed: (json['hintsUsed'] as num?)?.toInt() ?? 0,
       elapsedMs: (json['elapsedMs'] as num?)?.toInt() ?? 0,
-      startedAtIso: (json['startedAtIso'] ?? DateTime.now().toIso8601String()).toString(),
-      lastSavedAtIso: (json['lastSavedAtIso'] ?? DateTime.now().toIso8601String()).toString(),
+      startedAtIso:
+          (json['startedAtIso'] ?? DateTime.now().toIso8601String()).toString(),
+      lastSavedAtIso:
+          (json['lastSavedAtIso'] ?? DateTime.now().toIso8601String()).toString(),
       isCompleted: json['isCompleted'] == true,
     );
   }

@@ -9,6 +9,7 @@ import '../widgets/sudoku_board.dart';
 import '../widgets/number_pad.dart';
 import '../widgets/notes_toggle.dart';
 import '../widgets/completion_dialog.dart';
+import '../widgets/banner_ad_widget.dart';
 
 class GameScreen extends StatefulWidget {
   const GameScreen({super.key});
@@ -93,8 +94,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         return Scaffold(
           appBar: AppBar(
             title: Text(s == null
-                ? 'Sudoku'
-                : 'Sudoku • ${Difficulty.fromId(s.difficultyId, clues: s.clueCount).name}'),
+                ? 'Madoku'
+                : s.config.displayName),
             centerTitle: true,
             actions: [
               IconButton(
@@ -134,6 +135,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                       const SizedBox(height: 8),
 
                       SudokuBoard(
+                        config: s.config,
                         given: s.given,
                         board: s.board,
                         notes: s.notes,
@@ -180,12 +182,14 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                       const SizedBox(height: 8),
 
                       NumberPad(
+                        gridSize: s.config.geometry.size,
                         onNumber: (n) => game.enterNumber(n),
-                        onClear: () => game.enterNumber(0), // sets to 0 if allowed
+                        onClear: () => game.enterNumber(0),
                         onBackspace: game.clearCell,
                       ),
 
                       const SizedBox(height: 10),
+                      const Center(child: BannerAdWidget()),
                     ],
                   ),
           ),
