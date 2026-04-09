@@ -19,50 +19,60 @@ class ConstraintGenerator {
   List<int> generateJigsawRegions(GridGeometry geo) {
     final n = geo.size;
     final total = geo.cellCount;
-    final regionMap = List.filled(total, -1);
+    const maxAttempts = 200;
 
-    // Place one seed per region
-    final seeds = List.generate(total, (i) => i)..shuffle(_rng);
-    final regionSeeds = seeds.take(n).toList();
-    for (int r = 0; r < n; r++) {
-      regionMap[regionSeeds[r]] = r;
-    }
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+      final regionMap = List.filled(total, -1);
+      final regionSizes = List.filled(n, 0);
 
-    // Repeatedly grow each region by one adjacent unassigned cell
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      final order = List.generate(n, (i) => i)..shuffle(_rng);
-      for (final regionId in order) {
-        // Find all frontier cells (unassigned neighbours of this region)
-        final frontier = <int>[];
-        for (int i = 0; i < total; i++) {
-          if (regionMap[i] != regionId) continue;
-          for (final nb in _orthogonalNeighbours(i, geo)) {
-            if (regionMap[nb] == -1) frontier.add(nb);
+      // Place one seed per region.
+      final seeds = List.generate(total, (i) => i)..shuffle(_rng);
+      final regionSeeds = seeds.take(n).toList();
+      for (int r = 0; r < n; r++) {
+        regionMap[regionSeeds[r]] = r;
+        regionSizes[r] = 1;
+      }
+
+      int assigned = n;
+      bool progress = true;
+
+      while (assigned < total && progress) {
+        progress = false;
+        // Bias toward smaller regions so all regions converge on size n.
+        final order = List.generate(n, (i) => i)
+          ..shuffle(_rng)
+          ..sort((a, b) => regionSizes[a].compareTo(regionSizes[b]));
+
+        for (final regionId in order) {
+          if (regionSizes[regionId] >= n) continue;
+
+          final frontier = <int>{};
+          for (int i = 0; i < total; i++) {
+            if (regionMap[i] != regionId) continue;
+            for (final nb in _orthogonalNeighbours(i, geo)) {
+              if (regionMap[nb] == -1) frontier.add(nb);
+            }
           }
+
+          if (frontier.isEmpty) continue;
+          final picks = frontier.toList()..shuffle(_rng);
+          final pick = picks.first;
+          regionMap[pick] = regionId;
+          regionSizes[regionId]++;
+          assigned++;
+          progress = true;
+
+          if (assigned >= total) break;
         }
-        if (frontier.isEmpty) continue;
-        frontier.shuffle(_rng);
-        regionMap[frontier.first] = regionId;
-        changed = true;
+      }
+
+      if (assigned == total && regionSizes.every((s) => s == n)) {
+        return regionMap;
       }
     }
 
-    // Fill any remaining unassigned cells (shouldn't happen, but safety net)
-    for (int i = 0; i < total; i++) {
-      if (regionMap[i] == -1) {
-        // Assign to the region of the first assigned neighbour
-        for (final nb in _orthogonalNeighbours(i, geo)) {
-          if (regionMap[nb] != -1) {
-            regionMap[i] = regionMap[nb];
-            break;
-          }
-        }
-      }
-    }
-
-    return regionMap;
+    // Safe fallback: standard box regions (still valid Sudoku regions).
+    return List.generate(total, (idx) => geo.boxOf(idx));
   }
 
   // ── Killer cages ────────────────────────────────────────────────────────────
@@ -86,9 +96,13 @@ class ConstraintGenerator {
       assigned[start] = true;
 
       while (cells.length < targetSize) {
+        final cageValues = cells.map((c) => solution[c]).toSet();
         final candidates = cells
             .expand((c) => _orthogonalNeighbours(c, geo))
             .where((nb) => !assigned[nb])
+            // Killer no-repeat rule: don't add a cell whose value is already
+            // present in this cage (the solution would immediately conflict).
+            .where((nb) => !cageValues.contains(solution[nb]))
             .toList();
         if (candidates.isEmpty) break;
         candidates.shuffle(_rng);

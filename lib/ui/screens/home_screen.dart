@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../controllers/game_controller.dart';
-import '../../models/difficulty.dart';
 import '../../models/grid_geometry.dart';
 import '../../models/puzzle_config.dart';
 import '../../models/variant_constraint.dart';
@@ -17,6 +16,7 @@ import '../../models/constraints/killer_cage_constraint.dart';
 import '../../models/constraints/thermo_constraint.dart';
 import '../../models/constraints/jigsaw_regions_constraint.dart';
 import '../../services/madoku_variant_selector.dart';
+import '../../services/madoku_campaign.dart';
 import 'game_screen.dart';
 import 'settings_screen.dart';
 import 'stats_screen.dart';
@@ -119,7 +119,6 @@ final _allVariants = [
 
 // ── Incompatibility rules ─────────────────────────────────────────────────────
 
-/// Returns ids that should be disabled when [selected] is chosen.
 Set<_VariantId> _incompatibleWith(_VariantId id) => switch (id) {
       _VariantId.jigsaw   => {_VariantId.hyper, _VariantId.disjoint},
       _VariantId.hyper    => {_VariantId.jigsaw},
@@ -145,8 +144,8 @@ class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
 
-  // Quick Play
-  double _customClues = Difficulty.medium.clues.toDouble();
+  // Campaign progress (number of completed levels, 0 = none completed)
+  int _campaignProgress = 0;
 
   // Variant picker
   int _selectedGridIdx = 2; // 9×9 default
@@ -156,7 +155,14 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 3, vsync: this, initialIndex: 0);
+    _tabs = TabController(length: 2, vsync: this, initialIndex: 0);
+    _loadCampaignProgress();
+  }
+
+  Future<void> _loadCampaignProgress() async {
+    final game = context.read<GameController>();
+    final progress = await game.storage.loadCampaignProgress();
+    if (mounted) setState(() => _campaignProgress = progress);
   }
 
   @override
@@ -196,7 +202,6 @@ class _HomeScreenState extends State<HomeScreen>
   int get _variantClues {
     final geo = _pickedGeo;
     final diffId = ['easy', 'medium', 'hard'][_variantDiffIdx];
-    // Killer: engine will prune to 0; others use ratio
     if (_selectedVariants.contains(_VariantId.killer)) return 0;
     return madokuClues(geo, diffId);
   }
@@ -211,20 +216,20 @@ class _HomeScreenState extends State<HomeScreen>
     navigator.push(MaterialPageRoute(builder: (_) => const GameScreen()));
   }
 
-  Future<void> _startMadokuGame(String diffId) async {
+  Future<void> _startCampaignLevel(CampaignLevel level) async {
     final game = context.read<GameController>();
     final navigator = Navigator.of(context);
-    final selector = MadokuVariantSelector();
-    final config = selector.select(difficultyId: diffId);
-    final clues = madokuClues(config.geometry, diffId);
-    await game.newGameWithConfig(config, clues: clues);
+    await game.newCampaignLevel(level);
     if (!mounted) return;
-    navigator.push(MaterialPageRoute(builder: (_) => const GameScreen()));
+    await navigator.push(
+      MaterialPageRoute(builder: (_) => GameScreen(campaignLevel: level)),
+    );
+    // Reload progress in case it was updated while playing.
+    if (mounted) _loadCampaignProgress();
   }
 
   @override
   Widget build(BuildContext context) {
-    final game = context.read<GameController>();
     final scheme = Theme.of(context).colorScheme;
 
     return Scaffold(
@@ -234,9 +239,8 @@ class _HomeScreenState extends State<HomeScreen>
         bottom: TabBar(
           controller: _tabs,
           tabs: const [
-            Tab(text: 'Quick Play'),
+            Tab(text: 'Campaign'),
             Tab(text: 'Variants'),
-            Tab(text: 'Madoku Mode'),
           ],
         ),
         actions: [
@@ -252,21 +256,23 @@ class _HomeScreenState extends State<HomeScreen>
       body: TabBarView(
         controller: _tabs,
         children: [
-          _buildQuickPlay(game),
+          _buildCampaign(scheme),
           _buildVariantPicker(scheme),
-          _buildMadokuMode(scheme),
         ],
       ),
     );
   }
 
-  // ── Quick Play tab ──────────────────────────────────────────────────────────
+  // ── Campaign tab ────────────────────────────────────────────────────────────
 
-  Widget _buildQuickPlay(GameController game) {
+  Widget _buildCampaign(ColorScheme scheme) {
+    final game = context.read<GameController>();
+
     return SafeArea(
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // Continue button (if there is a saved game)
           FutureBuilder<bool>(
             future: game.hasSavedGame(),
             builder: (context, snap) {
@@ -289,46 +295,63 @@ class _HomeScreenState extends State<HomeScreen>
             },
           ),
 
-          for (final d in Difficulty.all) ...[
-            _CardButton(
-              title: d.name,
-              subtitle: d.subtitle,
-              onTap: () async {
-                final navigator = Navigator.of(context);
-                await game.newGame(d);
-                if (!mounted) return;
-                navigator.push(
-                  MaterialPageRoute(builder: (_) => const GameScreen()),
-                );
-              },
+          // Campaign header
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [scheme.primaryContainer, scheme.tertiaryContainer],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(20),
             ),
-            const SizedBox(height: 12),
-          ],
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Madoku Campaign',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        color: scheme.onPrimaryContainer,
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '$_campaignProgress / ${madokuCampaign.length} levels completed',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: scheme.onPrimaryContainer,
+                      ),
+                ),
+                const SizedBox(height: 10),
+                LinearProgressIndicator(
+                  value: madokuCampaign.isEmpty
+                      ? 0
+                      : _campaignProgress / madokuCampaign.length,
+                  backgroundColor: scheme.onPrimaryContainer.withValues(alpha: 0.2),
+                  color: scheme.onPrimaryContainer,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ],
+            ),
+          ),
 
-          const SizedBox(height: 8),
-          Text('Custom', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Text('Filled squares: ${_customClues.round()}'),
-          Slider(
-            value: _customClues,
-            min: Difficulty.minClues.toDouble(),
-            max: Difficulty.maxClues.toDouble(),
-            divisions: Difficulty.maxClues - Difficulty.minClues,
-            label: _customClues.round().toString(),
-            onChanged: (v) => setState(() => _customClues = v),
-          ),
-          FilledButton.tonal(
-            onPressed: () async {
-              final navigator = Navigator.of(context);
-              final d = Difficulty.custom(_customClues.round());
-              await game.newGame(d);
-              if (!mounted) return;
-              navigator.push(
-                MaterialPageRoute(builder: (_) => const GameScreen()),
-              );
-            },
-            child: const Text('Start Custom Game'),
-          ),
+          const SizedBox(height: 16),
+
+          // Level list
+          for (final level in madokuCampaign) ...[
+            _LevelTile(
+              level: level,
+              status: level.number <= _campaignProgress
+                  ? _LevelStatus.completed
+                  : level.number == _campaignProgress + 1
+                      ? _LevelStatus.current
+                      : _LevelStatus.locked,
+              // TODO(release): restore lock — onTap: level.number <= _campaignProgress + 1 ? () => _startCampaignLevel(level) : null,
+              onTap: () => _startCampaignLevel(level),
+            ),
+            const SizedBox(height: 8),
+          ],
 
           const SizedBox(height: 16),
           const Center(child: BannerAdWidget()),
@@ -366,7 +389,6 @@ class _HomeScreenState extends State<HomeScreen>
                   selected: _selectedGridIdx == i,
                   onSelected: (_) => setState(() {
                     _selectedGridIdx = i;
-                    // Remove variants that became invalid for new size
                     _selectedVariants.removeWhere(
                       (v) => !_variantValidForGeo(v, _gridOptions[i].geo),
                     );
@@ -377,7 +399,6 @@ class _HomeScreenState extends State<HomeScreen>
 
           const SizedBox(height: 20),
 
-          // Variant selection
           Text('Variants', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 4),
           Text(
@@ -399,7 +420,6 @@ class _HomeScreenState extends State<HomeScreen>
                       : (sel) => setState(() {
                             if (sel) {
                               _selectedVariants.add(v.id);
-                              // Remove any newly incompatible selections
                               _selectedVariants.removeWhere(
                                 (id) => id != v.id &&
                                     _incompatibleWith(v.id).contains(id),
@@ -414,7 +434,6 @@ class _HomeScreenState extends State<HomeScreen>
 
           const SizedBox(height: 20),
 
-          // Difficulty
           Text('Difficulty', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
           Wrap(
@@ -431,7 +450,6 @@ class _HomeScreenState extends State<HomeScreen>
 
           const SizedBox(height: 24),
 
-          // Config preview
           _ConfigPreviewCard(
             geo: _pickedGeo,
             variants: _selectedVariants
@@ -454,107 +472,93 @@ class _HomeScreenState extends State<HomeScreen>
       ),
     );
   }
+}
 
-  // ── Madoku Mode tab ─────────────────────────────────────────────────────────
+// ── Level tile ────────────────────────────────────────────────────────────────
 
-  Widget _buildMadokuMode(ColorScheme scheme) {
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  scheme.primaryContainer,
-                  scheme.tertiaryContainer,
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Madoku Mode',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        color: scheme.onPrimaryContainer,
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Every puzzle is unique — the app randomly combines '
-                  'grid sizes and variants so no two games feel the same.',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: scheme.onPrimaryContainer,
-                      ),
-                ),
-              ],
-            ),
+enum _LevelStatus { completed, current, locked }
+
+class _LevelTile extends StatelessWidget {
+  final CampaignLevel level;
+  final _LevelStatus status;
+  final VoidCallback? onTap;
+
+  const _LevelTile({
+    required this.level,
+    required this.status,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final isLocked = status == _LevelStatus.locked;
+    final isCurrent = status == _LevelStatus.current;
+    final isCompleted = status == _LevelStatus.completed;
+
+    final bgColor = isLocked
+        ? scheme.surfaceContainerHighest.withValues(alpha: 0.4)
+        : isCurrent
+            ? scheme.primaryContainer
+            : scheme.surfaceContainerHighest;
+
+    final textColor = isLocked
+        ? scheme.onSurface.withValues(alpha: 0.4)
+        : scheme.onSurface;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: isCurrent ? scheme.primary : scheme.outlineVariant,
+            width: isCurrent ? 2 : 1,
           ),
-
-          const SizedBox(height: 24),
-
-          Text('Choose difficulty', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 12),
-
-          for (final entry in [
-            ('Easy Madoku',   'easy',   'Gentle variants, more clues'),
-            ('Medium Madoku', 'medium', 'Balanced challenge'),
-            ('Hard Madoku',   'hard',   'Fewer clues, tougher combos'),
-          ]) ...[
-            _CardButton(
-              title: entry.$1,
-              subtitle: entry.$3,
-              onTap: () => _startMadokuGame(entry.$2),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 32,
+              child: Text(
+                '${level.number}',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: textColor,
+                      fontWeight: FontWeight.bold,
+                    ),
+              ),
             ),
-            const SizedBox(height: 12),
-          ],
-
-          const SizedBox(height: 8),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
+            const SizedBox(width: 12),
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('What can appear?',
-                      style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 4,
-                    children: [
-                      for (final label in [
-                        '4×4–16×16',
-                        'Killer',
-                        'Thermo',
-                        'Diagonal',
-                        'Hyper',
-                        'Jigsaw',
-                        'Anti-Knight',
-                        'Anti-King',
-                        'Non-Consec',
-                        'Disjoint',
-                      ])
-                        Chip(
-                          label: Text(label),
-                          visualDensity: VisualDensity.compact,
+                  Text(
+                    level.title,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: textColor,
                         ),
-                    ],
+                  ),
+                  Text(
+                    level.description,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: textColor.withValues(alpha: 0.7),
+                        ),
                   ),
                 ],
               ),
             ),
-          ),
-
-          const SizedBox(height: 16),
-          const Center(child: BannerAdWidget()),
-        ],
+            if (isCompleted)
+              Icon(Icons.check_circle, color: scheme.primary)
+            else if (isCurrent)
+              Icon(Icons.play_circle_outline, color: scheme.primary)
+            else
+              Icon(Icons.lock_outline, color: scheme.onSurface.withValues(alpha: 0.3)),
+          ],
+        ),
       ),
     );
   }
@@ -597,55 +601,6 @@ class _ConfigPreviewCard extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-// ── Shared card button ────────────────────────────────────────────────────────
-
-class _CardButton extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  const _CardButton({
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(18),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: scheme.outlineVariant),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title,
-                      style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 4),
-                  Text(subtitle,
-                      style: Theme.of(context).textTheme.bodyMedium),
-                ],
-              ),
-            ),
-            const Icon(Icons.chevron_right),
-          ],
-        ),
       ),
     );
   }

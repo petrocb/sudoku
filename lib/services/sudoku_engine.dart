@@ -25,6 +25,22 @@ class SudokuPuzzle {
     required this.seed,
     this.resolvedConfig,
   });
+
+  Map<String, dynamic> toJson() => {
+        'puzzle': puzzle,
+        'solution': solution,
+        'seed': seed,
+        if (resolvedConfig != null) 'resolvedConfig': resolvedConfig!.toJson(),
+      };
+
+  static SudokuPuzzle fromJson(Map<String, dynamic> json) => SudokuPuzzle(
+        puzzle:   (json['puzzle']   as List).map((e) => (e as num).toInt()).toList(),
+        solution: (json['solution'] as List).map((e) => (e as num).toInt()).toList(),
+        seed:     (json['seed']     as num).toInt(),
+        resolvedConfig: json['resolvedConfig'] != null
+            ? PuzzleConfig.fromJson(json['resolvedConfig'] as Map<String, dynamic>)
+            : null,
+      );
 }
 
 class SudokuEngine {

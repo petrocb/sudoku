@@ -5,6 +5,8 @@ import '../models/difficulty.dart';
 import '../models/game_state.dart';
 import '../models/puzzle_config.dart';
 
+import '../services/campaign_loader.dart';
+import '../services/madoku_campaign.dart';
 import '../services/storage_service.dart';
 import '../services/sudoku_engine.dart';
 import '../services/timer_service.dart';
@@ -100,6 +102,18 @@ class GameController extends ChangeNotifier {
     await newGameWithConfig(config, clues: d.clues);
   }
 
+  /// Start a campaign level, loading from a pre-generated asset if available,
+  /// falling back to live generation if the asset is missing.
+  Future<void> newCampaignLevel(CampaignLevel level) async {
+    _loading = true;
+    notifyListeners();
+
+    SudokuPuzzle? puzzle = await CampaignLoader.load(level.number);
+    puzzle ??= engine.generateFromConfig(level.config, clues: level.clues);
+
+    await _setupGameFromPuzzle(puzzle, level.config, level.clues);
+  }
+
   /// Start a variant game with a fully-specified [PuzzleConfig].
   /// The engine may produce a [resolvedConfig] (e.g. Jigsaw regionMap injected,
   /// Killer cages built) — that resolved version is stored in [GameState].
@@ -111,7 +125,15 @@ class GameController extends ChangeNotifier {
     await Future<void>.delayed(const Duration(milliseconds: 10));
 
     final puzzle = engine.generateFromConfig(config, clues: clues);
-    final effectiveConfig = puzzle.resolvedConfig ?? config;
+    await _setupGameFromPuzzle(puzzle, config, clues);
+  }
+
+  Future<void> _setupGameFromPuzzle(
+    SudokuPuzzle puzzle,
+    PuzzleConfig inputConfig,
+    int clues,
+  ) async {
+    final effectiveConfig = puzzle.resolvedConfig ?? inputConfig;
 
     _rules = PuzzleRules(effectiveConfig);
 

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter analyze:*)",
+      "Bash(python3 -c ':*)",
+      "Bash(grep -l \"toJson\" /c/Users/petro/Desktop/sudoku/lib/models/constraints/*.dart)"
+    ]
+  }
+}

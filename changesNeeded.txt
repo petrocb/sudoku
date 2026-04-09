@@ -1,0 +1,3 @@
+2 get rid of the quick play section
+3 Madoku should be a campaign of pregentreted puzzles, getting harder as it progresses
+3 killer doesnt work and generates puzzles with conflicts already in or the conflict system is broken

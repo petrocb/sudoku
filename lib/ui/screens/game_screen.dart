@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../controllers/game_controller.dart';
 import '../../models/difficulty.dart';
+import '../../services/madoku_campaign.dart';
 import '../../utils/formatters.dart';
 
 import '../widgets/sudoku_board.dart';
@@ -12,7 +13,11 @@ import '../widgets/completion_dialog.dart';
 import '../widgets/banner_ad_widget.dart';
 
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key});
+  /// When playing a campaign level, pass the level here.
+  /// Progress is saved automatically and "Next Level" is offered on completion.
+  final CampaignLevel? campaignLevel;
+
+  const GameScreen({super.key, this.campaignLevel});
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -20,10 +25,13 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   GameController? _controller;
+  // Tracks the current campaign level; may advance when "Next Level" is tapped.
+  CampaignLevel? _currentCampaignLevel;
 
   @override
   void initState() {
     super.initState();
+    _currentCampaignLevel = widget.campaignLevel;
     WidgetsBinding.instance.addObserver(this);
 
     // Listen for completion event -> show dialog
@@ -63,6 +71,19 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     c.clearCompletion();
 
     if (!mounted) return;
+
+    final campaignLevel = _currentCampaignLevel;
+
+    // Save campaign progress immediately when puzzle is completed.
+    if (campaignLevel != null) {
+      c.storage.saveCampaignProgress(campaignLevel.number);
+    }
+
+    // Find next campaign level (null if this was the last one).
+    final nextLevel = campaignLevel != null
+        ? madokuCampaign.where((l) => l.number == campaignLevel.number + 1).firstOrNull
+        : null;
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -74,13 +95,23 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
           Navigator.of(context).pop(); // close dialog
           Navigator.of(context).pop(); // back to home
         },
-        onNewGameSameDifficulty: () async {
-          Navigator.of(context).pop(); // close dialog
-          final s = c.state;
-          if (s == null) return;
-          final d = Difficulty.fromId(s.difficultyId, clues: s.clueCount);
-          await c.newGame(d);
-        },
+        onNextLevel: nextLevel != null
+            ? () async {
+                Navigator.of(context).pop(); // close dialog
+                await c.newCampaignLevel(nextLevel);
+                if (!mounted) return;
+                setState(() => _currentCampaignLevel = nextLevel);
+              }
+            : null,
+        onNewGameSameDifficulty: campaignLevel == null
+            ? () async {
+                Navigator.of(context).pop(); // close dialog
+                final s = c.state;
+                if (s == null) return;
+                final d = Difficulty.fromId(s.difficultyId, clues: s.clueCount);
+                await c.newGame(d);
+              }
+            : null,
       ),
     );
   }

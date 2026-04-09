@@ -51,6 +51,22 @@ class StorageService {
     return Stats.fromJson(decoded);
   }
 
+  static const _kCampaignProgress = 'campaign_progress_v1';
+
+  Future<int> loadCampaignProgress() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_kCampaignProgress) ?? 0;
+  }
+
+  /// Saves [completedLevel] (1-based) if it is greater than the stored value.
+  Future<void> saveCampaignProgress(int completedLevel) async {
+    final prefs = await SharedPreferences.getInstance();
+    final current = prefs.getInt(_kCampaignProgress) ?? 0;
+    if (completedLevel > current) {
+      await prefs.setInt(_kCampaignProgress, completedLevel);
+    }
+  }
+
   Future<void> saveSettings(Settings settings) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kSettings, jsonEncode(settings.toJson()));

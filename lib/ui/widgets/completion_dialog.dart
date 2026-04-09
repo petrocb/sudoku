@@ -6,7 +6,10 @@ class CompletionDialog extends StatelessWidget {
   final int hintsUsed;
 
   final VoidCallback onBackToHome;
-  final VoidCallback onNewGameSameDifficulty;
+  /// When non-null, shows a "Next Level" button instead of "New Game".
+  final VoidCallback? onNextLevel;
+  /// Only used when [onNextLevel] is null — starts a new game at same difficulty.
+  final VoidCallback? onNewGameSameDifficulty;
 
   const CompletionDialog({
     super.key,
@@ -14,13 +17,14 @@ class CompletionDialog extends StatelessWidget {
     required this.timeTaken,
     required this.hintsUsed,
     required this.onBackToHome,
-    required this.onNewGameSameDifficulty,
+    this.onNextLevel,
+    this.onNewGameSameDifficulty,
   });
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('✅ Puzzle complete!'),
+      title: const Text('Puzzle complete!'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -34,10 +38,16 @@ class CompletionDialog extends StatelessWidget {
           onPressed: onBackToHome,
           child: const Text('Back to Home'),
         ),
-        FilledButton(
-          onPressed: onNewGameSameDifficulty,
-          child: const Text('New Game'),
-        ),
+        if (onNextLevel != null)
+          FilledButton(
+            onPressed: onNextLevel,
+            child: const Text('Next Level'),
+          )
+        else if (onNewGameSameDifficulty != null)
+          FilledButton(
+            onPressed: onNewGameSameDifficulty,
+            child: const Text('New Game'),
+          ),
       ],
     );
   }
